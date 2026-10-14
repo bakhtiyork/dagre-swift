@@ -33,16 +33,58 @@ public enum BrandesKopf {
         }
     }
 
+    /// The graph's nodes by index with their labels and neighbors, so the passes below don't hash
+    /// node IDs
+    private struct IndexedNodes {
+        let ids: [String]
+        let index: [String: Int]
+        let labels: [DagreNodeLabel?]
+        let predecessors: [[Int]]
+        let successors: [[Int]]
+
+        init(_ g: DagreGraph) {
+            ids = g.nodes()
+            var index: [String: Int] = [:]
+            index.reserveCapacity(ids.count)
+            for (i, v) in ids.enumerated() {
+                index[v] = i
+            }
+            self.index = index
+            labels = ids.map { g.node($0) }
+            predecessors = ids.map { (g.predecessors($0) ?? []).map { index[$0]! } }
+            successors = ids.map { (g.successors($0) ?? []).map { index[$0]! } }
+        }
+    }
+
+    /// `Conflicts` on node indices
+    private struct IndexedConflicts {
+        private var pairs = Set<Int>()
+        private let nodeCount: Int
+
+        init(nodeCount: Int) {
+            self.nodeCount = nodeCount
+        }
+
+        mutating func add(_ v: Int, _ w: Int) {
+            pairs.insert(min(v, w) * nodeCount + max(v, w))
+        }
+
+        func has(_ v: Int, _ w: Int) -> Bool {
+            pairs.contains(min(v, w) * nodeCount + max(v, w))
+        }
+    }
+
     /// Computes x-coordinates using the Brandes-Kopf algorithm
     /// Returns x-coordinate for each node
     /// - Throws: `GraphError.namedEdgeOnNonMultigraph` if edge operations fail
     public static func positionX(_ g: DagreGraph, nodesep: Double, edgesep: Double, align: LayoutOptions.Alignment? = nil) throws -> [String: Double] {
-        let layering = GraphUtil.buildLayerMatrix(g)
+        let nodes = IndexedNodes(g)
+        let layering = GraphUtil.buildLayerMatrix(g).map { $0.map { nodes.index[$0]! } }
 
         // Find type-1 and type-2 conflicts
-        var conflicts = Conflicts()
-        findType1Conflicts(g, layering: layering, conflicts: &conflicts)
-        findType2Conflicts(g, layering: layering, conflicts: &conflicts)
+        var conflicts = IndexedConflicts(nodeCount: nodes.ids.count)
+        findType1Conflicts(nodes, layering: layering, conflicts: &conflicts)
+        findType2Conflicts(nodes, layering: layering, conflicts: &conflicts)
 
         // Compute 4 alignments (all combinations of up/down, left/right)
         var xss: [String: [String: Double]] = [:]
@@ -60,18 +102,22 @@ public enum BrandesKopf {
                 }
 
                 // Build alignment
-                let neighborFn: (DagreGraph, String) -> [String] = isUp ? predecessorsFn : successorsFn
-                let alignment = verticalAlignment(g, layering: adjustedLayering, conflicts: conflicts, neighborFn: neighborFn)
+                let neighbors = isUp ? nodes.predecessors : nodes.successors
+                let root = verticalAlignment(nodes, layering: adjustedLayering, conflicts: conflicts, neighbors: neighbors)
 
                 // Compute x-coordinates
-                var xs = try horizontalCompaction(g, layering: adjustedLayering, root: alignment.root, align: alignment.align, reverseSep: !isLeft, nodesep: nodesep, edgesep: edgesep)
+                let xs = horizontalCompaction(nodes, layering: adjustedLayering, root: root, reverseSep: !isLeft, nodesep: nodesep, edgesep: edgesep)
 
                 // Flip x-coordinates for right-biased
-                if !isLeft {
-                    xs = xs.mapValues { -$0 }
+                var xsByID: [String: Double] = [:]
+                xsByID.reserveCapacity(nodes.ids.count)
+                for layer in layering {
+                    for v in layer {
+                        xsByID[nodes.ids[v]] = isLeft ? xs[v] : -xs[v]
+                    }
                 }
 
-                xss[vert + horiz] = xs
+                xss[vert + horiz] = xsByID
 
                 // Restore layering for next iteration
                 if !isLeft {
@@ -90,16 +136,8 @@ public enum BrandesKopf {
 
     // MARK: - Conflict Detection
 
-    private static func predecessorsFn(_ g: DagreGraph, _ v: String) -> [String] {
-        g.predecessors(v) ?? []
-    }
-
-    private static func successorsFn(_ g: DagreGraph, _ v: String) -> [String] {
-        g.successors(v) ?? []
-    }
-
     /// Finds type-1 conflicts (non-inner segment crosses inner segment)
-    private static func findType1Conflicts(_ g: DagreGraph, layering: [[String]], conflicts: inout Conflicts) {
+    private static func findType1Conflicts(_ nodes: IndexedNodes, layering: [[Int]], conflicts: inout IndexedConflicts) {
         guard layering.count > 1 else { return }
 
         for i in 1..<layering.count {
@@ -112,22 +150,20 @@ public enum BrandesKopf {
 
             for (idx, v) in layer.enumerated() {
                 // Find inner segment node (both ends are dummy)
-                let w = findOtherInnerSegmentNode(g, v)
-                let k1 = w != nil ? (g.node(w!)?.order ?? prevLayerLength) : prevLayerLength
+                let w = findOtherInnerSegmentNode(nodes, v)
+                let k1 = w != nil ? (nodes.labels[w!]?.order ?? prevLayerLength) : prevLayerLength
 
                 if w != nil || idx == layer.count - 1 {
                     // Scan for conflicts
                     for scanIdx in scanPos...idx {
                         let scanNode = layer[scanIdx]
-                        if let preds = g.predecessors(scanNode) {
-                            for u in preds {
-                                let uPos = g.node(u)?.order ?? 0
-                                let uIsDummy = g.node(u)?.dummy != nil
-                                let scanIsDummy = g.node(scanNode)?.dummy != nil
+                        for u in nodes.predecessors[scanNode] {
+                            let uPos = nodes.labels[u]?.order ?? 0
+                            let uIsDummy = nodes.labels[u]?.dummy != nil
+                            let scanIsDummy = nodes.labels[scanNode]?.dummy != nil
 
-                                if (uPos < k0 || k1 < uPos) && !(uIsDummy && scanIsDummy) {
-                                    conflicts.add(u, scanNode)
-                                }
+                            if (uPos < k0 || k1 < uPos) && !(uIsDummy && scanIsDummy) {
+                                conflicts.add(u, scanNode)
                             }
                         }
                     }
@@ -139,20 +175,18 @@ public enum BrandesKopf {
     }
 
     /// Finds type-2 conflicts (at compound node borders)
-    private static func findType2Conflicts(_ g: DagreGraph, layering: [[String]], conflicts: inout Conflicts) {
+    private static func findType2Conflicts(_ nodes: IndexedNodes, layering: [[Int]], conflicts: inout IndexedConflicts) {
         guard layering.count > 1 else { return }
 
         // Inline scan function
-        func scan(south: [String], southPos: Int, southEnd: Int, prevNorthBorder: Int, nextNorthBorder: Int) {
+        func scan(south: [Int], southPos: Int, southEnd: Int, prevNorthBorder: Int, nextNorthBorder: Int) {
             for idx in southPos..<southEnd {
                 let v = south[idx]
-                if g.node(v)?.dummy != nil {
-                    if let preds = g.predecessors(v) {
-                        for u in preds {
-                            if let uNode = g.node(u), uNode.dummy != nil {
-                                if uNode.order < prevNorthBorder || uNode.order > nextNorthBorder {
-                                    conflicts.add(u, v)
-                                }
+                if nodes.labels[v]?.dummy != nil {
+                    for u in nodes.predecessors[v] {
+                        if let uNode = nodes.labels[u], uNode.dummy != nil {
+                            if uNode.order < prevNorthBorder || uNode.order > nextNorthBorder {
+                                conflicts.add(u, v)
                             }
                         }
                     }
@@ -170,9 +204,10 @@ public enum BrandesKopf {
             var lastScan: (southPos: Int, north: Int)?
 
             for (southLookahead, v) in south.enumerated() {
-                if g.node(v)?.dummy == .border {
-                    if let preds = g.predecessors(v), !preds.isEmpty {
-                        nextNorthPos = g.node(preds[0])?.order ?? 0
+                if nodes.labels[v]?.dummy == .border {
+                    let preds = nodes.predecessors[v]
+                    if !preds.isEmpty {
+                        nextNorthPos = nodes.labels[preds[0]]?.order ?? 0
                         scan(south: south, southPos: southPos, southEnd: southLookahead, prevNorthBorder: prevNorthPos, nextNorthBorder: nextNorthPos)
                         southPos = southLookahead
                         prevNorthPos = nextNorthPos
@@ -189,28 +224,31 @@ public enum BrandesKopf {
     }
 
     /// Finds the other node in an inner segment (both ends dummy)
-    private static func findOtherInnerSegmentNode(_ g: DagreGraph, _ v: String) -> String? {
-        guard g.node(v)?.dummy != nil else { return nil }
-        return g.predecessors(v)?.first { g.node($0)?.dummy != nil }
+    private static func findOtherInnerSegmentNode(_ nodes: IndexedNodes, _ v: Int) -> Int? {
+        guard nodes.labels[v]?.dummy != nil else { return nil }
+        return nodes.predecessors[v].first { nodes.labels[$0]?.dummy != nil }
     }
 
     // MARK: - Vertical Alignment
 
-    /// Builds vertical alignment by aligning nodes with their median neighbors
+    /// Builds vertical alignment by aligning nodes with their median neighbors.
+    /// Returns each node's block root, or -1 for nodes outside the layering.
     private static func verticalAlignment(
-        _ g: DagreGraph,
-        layering: [[String]],
-        conflicts: Conflicts,
-        neighborFn: (DagreGraph, String) -> [String]
-    ) -> Alignment {
-        var alignment = Alignment()
-        var pos: [String: Int] = [:]
+        _ nodes: IndexedNodes,
+        layering: [[Int]],
+        conflicts: IndexedConflicts,
+        neighbors: [[Int]]
+    ) -> [Int] {
+        var root = Array(repeating: -1, count: nodes.ids.count)
+        var align = root
+        // Nodes outside the layering sort as position 0
+        var pos = Array(repeating: 0, count: nodes.ids.count)
 
         // Initialize: each node is its own root and points to itself
         for layer in layering {
             for (order, v) in layer.enumerated() {
-                alignment.root[v] = v
-                alignment.align[v] = v
+                root[v] = v
+                align[v] = v
                 pos[v] = order
             }
         }
@@ -220,11 +258,11 @@ public enum BrandesKopf {
             var prevIdx = -1
 
             for v in layer {
-                var neighbors = neighborFn(g, v)
+                var neighbors = neighbors[v]
                 guard !neighbors.isEmpty else { continue }
 
                 // Sort neighbors by position
-                neighbors.sort { (pos[$0] ?? 0) < (pos[$1] ?? 0) }
+                neighbors.sort { pos[$0] < pos[$1] }
 
                 // Get median neighbor(s)
                 let mp = Double(neighbors.count - 1) / 2.0
@@ -233,14 +271,15 @@ public enum BrandesKopf {
 
                 for i in lower...upper {
                     let w = neighbors[i]
-                    let wPos = pos[w] ?? 0
+                    let wPos = pos[w]
 
-                    if alignment.align[v] == v && prevIdx < wPos && !conflicts.has(v, w) {
+                    if align[v] == v && prevIdx < wPos && !conflicts.has(v, w) {
                         // Only align if w has been initialized (is in the layering)
-                        if let wRoot = alignment.root[w] {
-                            alignment.align[w] = v
-                            alignment.align[v] = wRoot
-                            alignment.root[v] = wRoot
+                        let wRoot = root[w]
+                        if wRoot >= 0 {
+                            align[w] = v
+                            align[v] = wRoot
+                            root[v] = wRoot
                             prevIdx = wPos
                         }
                     }
@@ -248,111 +287,126 @@ public enum BrandesKopf {
             }
         }
 
-        return alignment
+        return root
     }
 
     // MARK: - Horizontal Compaction
 
-    /// Computes x-coordinates via horizontal compaction
+    /// Computes x-coordinates via horizontal compaction. Returns an x-coordinate per node,
+    /// meaningful for nodes in the layering.
     private static func horizontalCompaction(
-        _ g: DagreGraph,
-        layering: [[String]],
-        root: [String: String],
-        align: [String: String],
+        _ nodes: IndexedNodes,
+        layering: [[Int]],
+        root: [Int],
         reverseSep: Bool,
         nodesep: Double,
         edgesep: Double
-    ) throws -> [String: Double] {
-        var xs: [String: Double] = [:]
+    ) -> [Double] {
+        let nodeCount = nodes.ids.count
+        var xs = Array(repeating: 0.0, count: nodeCount)
 
         // Build block graph
-        let blockGraph = try buildBlockGraph(g, layering: layering, root: root, reverseSep: reverseSep, nodesep: nodesep, edgesep: edgesep)
+        let blockGraph = buildBlockGraph(nodes, layering: layering, root: root, reverseSep: reverseSep, nodesep: nodesep, edgesep: edgesep)
 
         // First pass: assign smallest coordinates (left to right)
-        var visited = Set<String>()
-        var stack = blockGraph.nodes()
+        var visited = Array(repeating: false, count: nodeCount)
+        var stack = blockGraph.nodes
 
         while let elem = stack.popLast() {
-            if visited.contains(elem) {
+            if visited[elem] {
                 // Process: set x to max of predecessors
                 var x: Double = 0
-                if let inEdges = blockGraph.inEdges(elem) {
-                    for edge in inEdges {
-                        let sep = blockGraph.edge(edge.id) ?? 0
-                        x = max(x, (xs[edge.v] ?? 0) + sep)
-                    }
+                for edge in blockGraph.inEdges[elem] {
+                    x = max(x, xs[blockGraph.edges[edge].u] + blockGraph.edges[edge].sep)
                 }
                 xs[elem] = x
             } else {
-                visited.insert(elem)
+                visited[elem] = true
                 stack.append(elem)
-                if let preds = blockGraph.predecessors(elem) {
-                    stack.append(contentsOf: preds)
-                }
+                stack.append(contentsOf: blockGraph.inEdges[elem].map { blockGraph.edges[$0].u })
             }
         }
 
         // Second pass: shift blocks to the right where possible
-        visited.removeAll()
-        stack = blockGraph.nodes()
+        visited = Array(repeating: false, count: nodeCount)
+        stack = blockGraph.nodes
         let borderType: DagreNodeLabel.BorderType = reverseSep ? .left : .right
 
         while let elem = stack.popLast() {
-            if visited.contains(elem) {
+            if visited[elem] {
                 // Process: shift right if possible
-                if let outEdges = blockGraph.outEdges(elem) {
-                    var minX = Double.infinity
-                    for edge in outEdges {
-                        let sep = blockGraph.edge(edge.id) ?? 0
-                        minX = min(minX, (xs[edge.w] ?? Double.infinity) - sep)
-                    }
+                var minX = Double.infinity
+                for edge in blockGraph.outEdges[elem] {
+                    minX = min(minX, xs[blockGraph.edges[edge].w] - blockGraph.edges[edge].sep)
+                }
 
-                    if minX != Double.infinity {
-                        if let nodeLabel = g.node(elem), nodeLabel.borderType != borderType {
-                            xs[elem] = max(xs[elem] ?? 0, minX)
-                        }
+                if minX != Double.infinity {
+                    if let nodeLabel = nodes.labels[elem], nodeLabel.borderType != borderType {
+                        xs[elem] = max(xs[elem], minX)
                     }
                 }
             } else {
-                visited.insert(elem)
+                visited[elem] = true
                 stack.append(elem)
-                if let succs = blockGraph.successors(elem) {
-                    stack.append(contentsOf: succs)
-                }
+                stack.append(contentsOf: blockGraph.outEdges[elem].map { blockGraph.edges[$0].w })
             }
         }
 
         // Assign x to all nodes based on their root
-        for v in align.keys {
-            if let r = root[v] {
-                xs[v] = xs[r]
+        for layer in layering {
+            for v in layer {
+                xs[v] = xs[root[v]]
             }
         }
 
         return xs
     }
 
+    /// Graph of block roots where edges represent separation constraints. Nodes, and each node's
+    /// in- and out-edges, are in insertion order.
+    private struct BlockGraph {
+        var nodes: [Int] = []
+        var edges: [(u: Int, w: Int, sep: Double)] = []
+        var inEdges: [[Int]]
+        var outEdges: [[Int]]
+    }
+
     /// Builds a block graph where edges represent separation constraints
     private static func buildBlockGraph(
-        _ g: DagreGraph,
-        layering: [[String]],
-        root: [String: String],
+        _ nodes: IndexedNodes,
+        layering: [[Int]],
+        root: [Int],
         reverseSep: Bool,
         nodesep: Double,
         edgesep: Double
-    ) throws -> Graph<Void, Double> {
-        let blockGraph = Graph<Void, Double>()
+    ) -> BlockGraph {
+        let nodeCount = nodes.ids.count
+        var blockGraph = BlockGraph(inEdges: Array(repeating: [], count: nodeCount),
+                                    outEdges: Array(repeating: [], count: nodeCount))
+        var hasNode = Array(repeating: false, count: nodeCount)
+        var edgeIndex: [Int: Int] = [:]
 
         for layer in layering {
-            var prev: String?
+            var prev: Int?
             for v in layer {
-                guard let vRoot = root[v] else { continue }
-                blockGraph.setNode(vRoot)
+                let vRoot = root[v]
+                if !hasNode[vRoot] {
+                    hasNode[vRoot] = true
+                    blockGraph.nodes.append(vRoot)
+                }
 
-                if let u = prev, let uRoot = root[u] {
-                    let sep = calculateSeparation(g, v: v, u: u, reverseSep: reverseSep, nodesep: nodesep, edgesep: edgesep)
-                    let existing = blockGraph.edge(uRoot, vRoot) ?? 0
-                    try blockGraph.setEdge(uRoot, vRoot, label: max(sep, existing))
+                if let u = prev {
+                    let uRoot = root[u]
+                    let sep = calculateSeparation(v: nodes.labels[v], u: nodes.labels[u], reverseSep: reverseSep, nodesep: nodesep, edgesep: edgesep)
+                    if let edge = edgeIndex[uRoot * nodeCount + vRoot] {
+                        blockGraph.edges[edge].sep = max(sep, blockGraph.edges[edge].sep)
+                    } else {
+                        let edge = blockGraph.edges.count
+                        edgeIndex[uRoot * nodeCount + vRoot] = edge
+                        blockGraph.edges.append((uRoot, vRoot, max(sep, 0)))
+                        blockGraph.outEdges[uRoot].append(edge)
+                        blockGraph.inEdges[vRoot].append(edge)
+                    }
                 }
 
                 prev = v
@@ -367,14 +421,13 @@ public enum BrandesKopf {
     /// Called with calculateSeparation(g, v: currentNode, u: previousNode)
     /// TypeScript: sepFn(g, v, u) where v is current (right), u is previous (left)
     private static func calculateSeparation(
-        _ g: DagreGraph,
-        v: String,
-        u: String,
+        v vLabel: DagreNodeLabel?,
+        u uLabel: DagreNodeLabel?,
         reverseSep: Bool,
         nodesep: Double,
         edgesep: Double
     ) -> Double {
-        guard let vLabel = g.node(v), let uLabel = g.node(u) else { return 0 }
+        guard let vLabel = vLabel, let uLabel = uLabel else { return 0 }
 
         var sum: Double = 0
         var delta: Double = 0
