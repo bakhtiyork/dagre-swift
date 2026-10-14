@@ -141,7 +141,9 @@ final class IndexedConstraintGraph {
         for (i, v) in vs.enumerated() { positions[v] = i }
         var ids: [Int] = []
         for v in vs {
-            ids += out[v].filter { positions[edges[$0].w] >= 0 }
+            for edge in out[v] where positions[edges[edge].w] >= 0 {
+                ids.append(edge)
+            }
         }
         ids.sort()
         let result = ids.map { (v: positions[edges[$0].v], w: positions[edges[$0].w]) }

@@ -256,25 +256,6 @@ public enum SortSubgraph {
 
     // MARK: - Resolve Conflicts (resolve-conflicts.js)
 
-    /// Internal class for resolve conflicts algorithm
-    private final class MappedEntry<V> {
-        var indegree: Int = 0
-        var `in`: [MappedEntry] = []
-        var out: [MappedEntry] = []
-        var vs: [V]
-        var i: Int
-        var barycenter: Double?
-        var weight: Int
-        var merged: Bool = false
-
-        init(v: V, barycenter: Double?, weight: Int, index: Int) {
-            self.vs = [v]
-            self.i = index
-            self.barycenter = barycenter
-            self.weight = weight
-        }
-    }
-
     /// Resolves conflicts using constraint graph
     /// Matches TypeScript resolve-conflicts.js
     ///
@@ -302,67 +283,63 @@ public enum SortSubgraph {
         _ entries: [(v: V, barycenter: Double?, weight: Int)],
         constraints: [(v: Int, w: Int)]
     ) -> [ResolvedEntry<V>] {
-        let mappedEntries = entries.enumerated().map { (i, entry) in
-            MappedEntry(v: entry.v, barycenter: entry.barycenter, weight: entry.weight, index: i)
+        var mappedEntries = entries.enumerated().map { (i, entry) in
+            ResolvedEntry(vs: [entry.v], i: i, barycenter: entry.barycenter, weight: entry.weight)
         }
 
-        // Build the constraint graph relationships
-        for constraint in constraints {
-            let entryV = mappedEntries[constraint.v]
-            let entryW = mappedEntries[constraint.w]
+        // Without constraints every entry is a source, taken from the end, and nothing merges
+        if constraints.isEmpty {
+            return mappedEntries.reversed()
+        }
 
-            entryW.indegree += 1
-            entryV.out.append(entryW)
+        // Build the constraint graph relationships, by entry position
+        var indegree = Array(repeating: 0, count: entries.count)
+        var ins = Array(repeating: [Int](), count: entries.count)
+        var outs = Array(repeating: [Int](), count: entries.count)
+        var merged = Array(repeating: false, count: entries.count)
+        for constraint in constraints {
+            indegree[constraint.w] += 1
+            outs[constraint.v].append(constraint.w)
         }
 
         // Find sources (entries with no incoming constraints)
-        var sourceSet = mappedEntries.filter { $0.indegree == 0 }
+        var sourceSet = mappedEntries.indices.filter { indegree[$0] == 0 }
 
         // Process in topological order
-        var result: [MappedEntry<V>] = []
+        var result: [Int] = []
 
-        func handleIn(_ vEntry: MappedEntry<V>) -> (MappedEntry<V>) -> Void {
-            return { uEntry in
-                if uEntry.merged { return }
-
-                // Merge if no barycenter or if constraint is violated (uEntry.bc >= vEntry.bc)
-                if uEntry.barycenter == nil || vEntry.barycenter == nil ||
-                   uEntry.barycenter! >= vEntry.barycenter! {
-                    mergeEntries(target: vEntry, source: uEntry)
-                }
-            }
-        }
-
-        func handleOut(_ vEntry: MappedEntry<V>) -> (MappedEntry<V>) -> Void {
-            return { wEntry in
-                wEntry.in.append(vEntry)
-                wEntry.indegree -= 1
-                if wEntry.indegree == 0 {
-                    sourceSet.append(wEntry)
-                }
-            }
-        }
-
-        while !sourceSet.isEmpty {
-            let entry = sourceSet.removeLast()
-            result.append(entry)
+        while let v = sourceSet.popLast() {
+            result.append(v)
 
             // Process incoming entries (reversed to match TypeScript)
-            entry.in.reversed().forEach(handleIn(entry))
+            for u in ins[v].reversed() where !merged[u] {
+                let uEntry = mappedEntries[u]
+                let vBC = mappedEntries[v].barycenter
+
+                // Merge if no barycenter or if constraint is violated (uEntry.bc >= vEntry.bc)
+                if uEntry.barycenter == nil || vBC == nil || uEntry.barycenter! >= vBC! {
+                    mergeEntries(target: &mappedEntries[v], source: uEntry)
+                    merged[u] = true
+                }
+            }
 
             // Process outgoing entries
-            entry.out.forEach(handleOut(entry))
+            for w in outs[v] {
+                ins[w].append(v)
+                indegree[w] -= 1
+                if indegree[w] == 0 {
+                    sourceSet.append(w)
+                }
+            }
         }
 
-        // Filter out merged entries and convert to ResolvedEntry
-        return result.filter { !$0.merged }.map { entry in
-            ResolvedEntry(vs: entry.vs, i: entry.i, barycenter: entry.barycenter, weight: entry.weight)
-        }
+        // Filter out merged entries
+        return result.filter { !merged[$0] }.map { mappedEntries[$0] }
     }
 
     /// Merges source entry into target entry
     /// Matches TypeScript mergeEntries in resolve-conflicts.js
-    private static func mergeEntries<V>(target: MappedEntry<V>, source: MappedEntry<V>) {
+    private static func mergeEntries<V>(target: inout ResolvedEntry<V>, source: ResolvedEntry<V>) {
         var sum: Double = 0
         var weight: Int = 0
 
@@ -381,7 +358,6 @@ public enum SortSubgraph {
         target.barycenter = weight > 0 ? sum / Double(weight) : nil
         target.weight = weight
         target.i = min(source.i, target.i)
-        source.merged = true
     }
 
     // MARK: - Sort (sort.js)
