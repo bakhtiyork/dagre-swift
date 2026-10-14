@@ -52,7 +52,7 @@ public enum CrossCount {
 
     /// Returns the weighted crossing count for a layering of node indices. `outEdges` gives each
     /// node's out-edges as (target, weight) and `southPos` is scratch space filled with -1.
-    static func count(layering: [[Int]], outEdges: [[(w: Int, weight: Int)]], southPos: inout [Int]) -> Int {
+    static func count(layering: [[Int]], outEdges: [[(u: Int, weight: Int)]], southPos: inout [Int]) -> Int {
         var cc = 0
         for i in 1..<layering.count {
             let southLayer = layering[i]
@@ -64,8 +64,8 @@ public enum CrossCount {
             var southEntries: [(pos: Int, weight: Int)] = []
             for v in layering[i - 1] {
                 var entries: [(pos: Int, weight: Int)] = []
-                for edge in outEdges[v] where southPos[edge.w] >= 0 {
-                    entries.append((southPos[edge.w], edge.weight))
+                for edge in outEdges[v] where southPos[edge.u] >= 0 {
+                    entries.append((southPos[edge.u], edge.weight))
                 }
                 entries.sort { $0.pos < $1.pos }
                 southEntries.append(contentsOf: entries)

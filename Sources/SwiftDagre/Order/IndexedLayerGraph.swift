@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SwiftDagre - A Swift port of @dagrejs/dagre
 
-/// A layer graph (see `BuildLayerGraph`) compiled once per `Order.run` into node indices, so the
-/// sweeps sort without hashing node IDs. Each subgraph keeps what `SortSubgraph.sortLayerGraph`
-/// reads from the layer graph: its movable children in layer graph order, their in-edges, and
-/// the rank's border nodes.
+/// A layer graph (see `BuildLayerGraph`) in node indices, so the sweeps in `Order.run` sort without
+/// hashing node IDs. Each subgraph keeps what `SortSubgraph.sortLayerGraph` reads from the layer
+/// graph: its movable children in layer graph order, their in-edges, and the rank's border nodes.
 struct IndexedLayerGraph {
     struct Subgraph {
         /// Children other than the border nodes, in layer graph insertion order
@@ -19,35 +18,101 @@ struct IndexedLayerGraph {
     }
 
     let root: Subgraph
+}
 
-    init(_ lg: Graph<BuildLayerGraph.LayerNodeLabel, BuildLayerGraph.LayerEdgeLabel>, root: String, index: [String: Int]) {
-        self.root = Self.subgraph(lg, root, index)
+/// Builds indexed layer graphs straight from the main graph, with the result
+/// `BuildLayerGraph.build` would give: the rank's nodes under their parents (or the root), an edge
+/// from each neighbor with the weights of parallel edges summed, and children in the order the
+/// layer graph first saw them (as a node, a parent or a neighbor).
+final class IndexedLayerGraphBuilder {
+    private let g: DagreGraph
+    private let ids: [String]
+    private let index: [String: Int]
+    /// Main graph parent of each node, with `root` for top-level nodes
+    private let parent: [Int?]
+    private let root: Int
+
+    // Scratch, -1 outside of a build
+    private var slot: [Int]
+    private var memberPosition: [Int]
+    private var edgePosition: [Int]
+
+    init(_ g: DagreGraph, ids: [String], index: [String: Int], parent: [Int?]) {
+        self.g = g
+        self.ids = ids
+        self.index = index
+        self.parent = parent
+        root = ids.count
+        slot = Array(repeating: -1, count: ids.count)
+        memberPosition = slot
+        edgePosition = slot
     }
 
-    private static func subgraph(
-        _ lg: Graph<BuildLayerGraph.LayerNodeLabel, BuildLayerGraph.LayerEdgeLabel>,
-        _ v: String,
-        _ index: [String: Int]
-    ) -> Subgraph {
-        var sg = Subgraph()
-        var movable = lg.children(v) ?? []
-        let label = lg.node(v)
-
-        if let bl = label?.borderLeft, let br = label?.borderRight {
-            movable = movable.filter { $0 != bl && $0 != br }
-            sg.borders = (index[bl]!, index[br]!)
-            if let blPred = lg.predecessors(bl)?.first, let brPred = lg.predecessors(br)?.first {
-                sg.borderPredecessors = (index[blPred]!, index[brPred]!)
+    /// Builds the layer graph of `rank` from its nodes in graph order, where `neighbors` gives the
+    /// edges of the relationship (in-edge sources or out-edge targets) of every node
+    func build(rank: Int, nodes: [Int], neighbors: [[(u: Int, weight: Int)]]) -> IndexedLayerGraph {
+        var seen: [Int] = []
+        func see(_ v: Int) {
+            if slot[v] < 0 {
+                slot[v] = seen.count
+                seen.append(v)
             }
         }
 
-        for w in movable {
-            sg.movable.append(index[w]!)
-            sg.inEdges.append((lg.inEdges(w) ?? []).map { (u: index[$0.v]!, weight: lg.edge($0.id)?.weight ?? 1) })
-            let hasChildren = !(lg.children(w) ?? []).isEmpty
-            sg.nested.append(hasChildren ? subgraph(lg, w, index) : nil)
+        var members: [(v: Int, inEdges: [(u: Int, weight: Int)])] = []
+        var children: [Int: [Int]] = [:]
+        for v in nodes {
+            see(v)
+            let p = parent[v]!
+            if p != root { see(p) }
+            children[p, default: []].append(v)
+
+            var inEdges: [(u: Int, weight: Int)] = []
+            for (u, weight) in neighbors[v] {
+                see(u)
+                if edgePosition[u] >= 0 {
+                    inEdges[edgePosition[u]].weight += weight
+                } else {
+                    edgePosition[u] = inEdges.count
+                    inEdges.append((u, weight))
+                }
+            }
+            for edge in inEdges { edgePosition[edge.u] = -1 }
+
+            memberPosition[v] = members.count
+            members.append((v, inEdges))
         }
-        return sg
+
+        func subgraph(_ v: Int) -> IndexedLayerGraph.Subgraph {
+            var sg = IndexedLayerGraph.Subgraph()
+            var movable = (children[v] ?? []).sorted { slot[$0] < slot[$1] }
+
+            if v != root, let node = g.node(ids[v]), node.minRank != nil,
+               let bl = node.borderLeft[rank].map({ index[$0]! }),
+               let br = node.borderRight[rank].map({ index[$0]! }) {
+                movable = movable.filter { $0 != bl && $0 != br }
+                sg.borders = (bl, br)
+                if let blPred = predecessor(bl), let brPred = predecessor(br) {
+                    sg.borderPredecessors = (blPred, brPred)
+                }
+            }
+
+            for w in movable {
+                sg.movable.append(w)
+                sg.inEdges.append(members[memberPosition[w]].inEdges)
+                sg.nested.append(children[w] == nil ? nil : subgraph(w))
+            }
+            return sg
+        }
+
+        func predecessor(_ v: Int) -> Int? {
+            memberPosition[v] >= 0 ? members[memberPosition[v]].inEdges.first?.u : nil
+        }
+
+        let layerGraph = IndexedLayerGraph(root: subgraph(root))
+        for v in seen { slot[v] = -1 }
+        for member in members { memberPosition[member.v] = -1 }
+        return layerGraph
     }
 }
 

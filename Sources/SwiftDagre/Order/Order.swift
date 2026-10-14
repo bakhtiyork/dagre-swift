@@ -39,15 +39,6 @@ public enum Order {
 
         let maxRank = GraphUtil.maxRank(g)
 
-        // Build layer graphs for sweeping
-        // downLayerGraphs: ranks 1 to maxRank, using inEdges
-        // upLayerGraphs: ranks maxRank-1 down to 0, using outEdges
-        let downRanks = maxRank >= 1 ? Array(1...maxRank) : []
-        let upRanks = maxRank >= 1 ? Array((0..<maxRank).reversed()) : []
-
-        let downLayerGraphs = try buildLayerGraphs(g, ranks: downRanks, relationship: "inEdges")
-        let upLayerGraphs = try buildLayerGraphs(g, ranks: upRanks, relationship: "outEdges")
-
         // Get initial layering
         let layering = InitOrder.run(g)
         assignOrder(g, layering: layering)
@@ -67,9 +58,22 @@ public enum Order {
         let root = ids.count
         let parent: [Int?] = ids.map { v in g.parent(v).map { index[$0]! } ?? root } + [nil]
         var order = ids.map { g.node($0)?.order ?? 0 }
+        let inEdges: [[(u: Int, weight: Int)]] = ids.map { v in
+            (g.inEdges(v) ?? []).map { (u: index[$0.v]!, weight: g.edge($0.id)?.weight ?? 1) }
+        }
+        let outEdges: [[(u: Int, weight: Int)]] = ids.map { v in
+            (g.outEdges(v) ?? []).map { (u: index[$0.w]!, weight: g.edge($0.id)?.weight ?? 1) }
+        }
 
-        let downGraphs = downLayerGraphs.map { IndexedLayerGraph($0.graph, root: $0.root, index: index) }
-        let upGraphs = upLayerGraphs.map { IndexedLayerGraph($0.graph, root: $0.root, index: index) }
+        // Build layer graphs for sweeping
+        // downGraphs: ranks 1 to maxRank, using inEdges
+        // upGraphs: ranks maxRank-1 down to 0, using outEdges
+        let nodesWithRank = nodesByRank(g, ids: ids)
+        let builder = IndexedLayerGraphBuilder(g, ids: ids, index: index, parent: parent)
+        let downRanks = maxRank >= 1 ? Array(1...maxRank) : []
+        let upRanks = maxRank >= 1 ? Array((0..<maxRank).reversed()) : []
+        let downGraphs = downRanks.map { builder.build(rank: $0, nodes: nodesWithRank[$0] ?? [], neighbors: inEdges) }
+        let upGraphs = upRanks.map { builder.build(rank: $0, nodes: nodesWithRank[$0] ?? [], neighbors: outEdges) }
 
         // Nodes of each layer in graph order, as GraphUtil.buildLayerMatrix collects them
         var layerNodes: [[Int]] = Array(repeating: [], count: max(maxRank, 0) + 1)
@@ -77,9 +81,6 @@ public enum Order {
             if let rank = g.node(v)?.rank, rank >= 0 && rank < layerNodes.count {
                 layerNodes[rank].append(i)
             }
-        }
-        let outEdges: [[(w: Int, weight: Int)]] = ids.map { v in
-            (g.outEdges(v) ?? []).map { (w: index[$0.w]!, weight: g.edge($0.id)?.weight ?? 1) }
         }
         var southPos = Array(repeating: -1, count: ids.count)
 
@@ -124,38 +125,22 @@ public enum Order {
         assignOrder(g, layering: bestLayering.map { $0.map { ids[$0] } })
     }
 
-    /// Builds layer graphs for all specified ranks
-    /// Pre-computes nodes by rank (including compound nodes that span multiple ranks)
-    /// to avoid quadratic search during layer graph construction
-    private static func buildLayerGraphs(_ g: DagreGraph, ranks: [Int], relationship: String) throws -> [(graph: Graph<BuildLayerGraph.LayerNodeLabel, BuildLayerGraph.LayerEdgeLabel>, root: String)] {
-        // Build an index mapping from rank to the nodes with that rank
-        // This helps avoid a quadratic search for all nodes with the same rank
-        var nodesByRank: [Int: [String]] = [:]
-
-        for v in g.nodes() {
+    /// Indices of the nodes that belong to each rank, in graph order. Compound nodes belong to
+    /// every rank they span, other nodes to their own rank (see BuildLayerGraph).
+    private static func nodesByRank(_ g: DagreGraph, ids: [String]) -> [Int: [Int]] {
+        var nodesByRank: [Int: [Int]] = [:]
+        for (i, v) in ids.enumerated() {
             guard let node = g.node(v) else { continue }
 
-            // Add node to its primary rank
-            nodesByRank[node.rank, default: []].append(v)
-
-            // If there is a range of ranks (compound nodes), add to each rank in the range
-            // but skip node.rank which has already been added
             if let minRank = node.minRank, let maxRank = node.maxRank {
                 for r in minRank...maxRank {
-                    if r != node.rank {
-                        nodesByRank[r, default: []].append(v)
-                    }
+                    nodesByRank[r, default: []].append(i)
                 }
+            } else {
+                nodesByRank[node.rank, default: []].append(i)
             }
         }
-
-        var layerGraphs: [(graph: Graph<BuildLayerGraph.LayerNodeLabel, BuildLayerGraph.LayerEdgeLabel>, root: String)] = []
-        for rank in ranks {
-            let nodesWithRank = nodesByRank[rank] ?? []
-            let result = try BuildLayerGraph.build(g, rank: rank, relationship: relationship, nodesWithRank: nodesWithRank)
-            layerGraphs.append((graph: result.graph, root: result.root))
-        }
-        return layerGraphs
+        return nodesByRank
     }
 
     /// Sweeps through all layer graphs, sorting each one and updating node orders
