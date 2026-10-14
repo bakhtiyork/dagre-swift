@@ -19,6 +19,14 @@ SwiftDagre provides algorithms for laying out directed graphs on a plane. Given 
 
 This is a faithful port of the JavaScript [dagre](https://github.com/dagrejs/dagre) library, preserving the same algorithms and behavior.
 
+### About this fork
+
+This fork of [lukilabs/dagre-swift](https://github.com/lukilabs/dagre-swift) 0.1.0 changes performance, not layouts. Output is byte-identical to 0.1.0, checked by golden tests over every node coordinate and edge point (`Tests/SwiftDagreTests/GoldenLayoutTests.swift`).
+
+- **Faster.** Whole-graph scans in the graph store are gone, and the ordering and Brandes-Köpf passes run on integer node indices. Measured on random graphs with the `Benchmarks` package: 1000 nodes 10.0 s → 0.5 s, and 300 nodes with 20 clusters 45.6 s → 1.1 s.
+- **Small-stack safe.** The ranking, acyclic and initial-order depth-first searches are iterative, so layout runs on a 512 KB stack, for example a Swift-concurrency thread. Recursion remains only over cluster nesting depth.
+- **Deterministic tie-break.** When two Brandes-Köpf alignments are equally narrow, the first in ul, ur, dl, dr order wins, as in dagre.js. 0.1.0 chose by Dictionary iteration order, which varies between processes.
+
 ## Features
 
 - **Network simplex** ranking algorithm
@@ -36,7 +44,7 @@ Add SwiftDagre to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/lukilabs/dagre-swift", from: "0.1.0")
+    .package(url: "https://github.com/bakhtiyork/dagre-swift", from: "0.2.0")
 ]
 ```
 
