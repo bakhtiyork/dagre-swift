@@ -149,27 +149,23 @@ public enum GraphUtil {
             }
         }
 
-        // Build layers
-        var layers: [[String]] = Array(repeating: [], count: maxRank + 1)
+        // Build layers, keeping each node's order next to it for the sort
+        var layers: [[(v: String, order: Int)]] = Array(repeating: [], count: maxRank + 1)
 
         for v in g.nodes() {
             if let label = g.node(v) {
                 let rank = label.rank
                 // Guard against negative ranks which would cause index out of range
                 if rank >= 0 && rank < layers.count {
-                    layers[rank].append(v)
+                    layers[rank].append((v, label.order))
                 }
             }
         }
 
         // Sort each layer by order
-        for i in 0..<layers.count {
-            layers[i].sort { v1, v2 in
-                (g.node(v1)?.order ?? 0) < (g.node(v2)?.order ?? 0)
-            }
+        return layers.map { layer in
+            layer.sorted { $0.order < $1.order }.map(\.v)
         }
-
-        return layers
     }
 
     /// Threshold for chunking array operations (matches TypeScript)

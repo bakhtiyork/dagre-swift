@@ -45,11 +45,11 @@ public enum InitOrder {
         }
 
         // Sort nodes by rank and process via DFS
-        let orderedVs = simpleNodes.sorted { (a, b) in
-            (g.node(a)?.rank ?? 0) < (g.node(b)?.rank ?? 0)
-        }
+        let orderedVs = simpleNodes
+            .map { (v: $0, rank: g.node($0)?.rank ?? 0) }
+            .sorted { $0.rank < $1.rank }
 
-        for v in orderedVs {
+        for (v, _) in orderedVs {
             dfs(v)
         }
 
