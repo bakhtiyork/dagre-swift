@@ -207,7 +207,7 @@ public enum SortSubgraph {
         }
 
         // Build the constraint graph relationships
-        for edge in cg.edges() {
+        for edge in cg.edges(within: mappedEntries) {
             guard let entryV = mappedEntries[edge.v],
                   let entryW = mappedEntries[edge.w] else { continue }
 

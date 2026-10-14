@@ -167,6 +167,7 @@ public enum BrandesKopf {
             var prevNorthPos = -1
             var nextNorthPos: Int = 0
             var southPos = 0
+            var lastScan: (southPos: Int, north: Int)?
 
             for (southLookahead, v) in south.enumerated() {
                 if g.node(v)?.dummy == .border {
@@ -177,8 +178,12 @@ public enum BrandesKopf {
                         prevNorthPos = nextNorthPos
                     }
                 }
-                // Final scan - called at every iteration per TypeScript line 118
-                scan(south: south, southPos: southPos, southEnd: south.count, prevNorthBorder: nextNorthPos, nextNorthBorder: north.count)
+                // Final scan - called at every iteration per TypeScript line 118. Repeating it
+                // with unchanged arguments adds nothing (conflicts is a set), so skip repeats.
+                if lastScan?.southPos != southPos || lastScan?.north != nextNorthPos {
+                    lastScan = (southPos, nextNorthPos)
+                    scan(south: south, southPos: southPos, southEnd: south.count, prevNorthBorder: nextNorthPos, nextNorthBorder: north.count)
+                }
             }
         }
     }

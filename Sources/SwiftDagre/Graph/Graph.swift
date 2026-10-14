@@ -51,8 +51,22 @@ public final class Graph<NodeLabel, EdgeLabel> {
     /// All nodes that exist in the graph (even those without labels)
     private var _nodeSet: Set<String> = []
 
-    /// Node insertion order for deterministic iteration
-    private var _nodeOrder: [String] = []
+    /// Node insertion order for deterministic iteration. Removal leaves a nil hole in
+    /// `_nodeSlots` (O(1)); holes are compacted on the next ordered read. Slot indices
+    /// increase with insertion order, so they also order subsets such as children.
+    private var _nodeSlots: [String?] = []
+    private var _nodeSlot: [String: Int] = [:]
+    private var _nodeHoles = 0
+    private var _nodeList: [String] = []
+    private var _nodeOrder: [String] {
+        if _nodeHoles > 0 {
+            _nodeSlots = _nodeSlots.filter { $0 != nil }
+            for (i, v) in _nodeSlots.enumerated() { _nodeSlot[v!] = i }
+            _nodeHoles = 0
+            _nodeList = _nodeSlots.map { $0! }
+        }
+        return _nodeList
+    }
 
     // MARK: - Edge storage
 
@@ -71,8 +85,20 @@ public final class Graph<NodeLabel, EdgeLabel> {
     /// For multigraphs: node -> node -> count
     private var _edgeCount: Int = 0
 
-    /// Edge insertion order for deterministic iteration
-    private var _edgeOrder: [EdgeId] = []
+    /// Edge insertion order for deterministic iteration (same hole scheme as nodes)
+    private var _edgeSlots: [EdgeId?] = []
+    private var _edgeSlot: [EdgeId: Int] = [:]
+    private var _edgeHoles = 0
+    private var _edgeList: [EdgeId] = []
+    private var _edgeOrder: [EdgeId] {
+        if _edgeHoles > 0 {
+            _edgeSlots = _edgeSlots.filter { $0 != nil }
+            for (i, e) in _edgeSlots.enumerated() { _edgeSlot[e!] = i }
+            _edgeHoles = 0
+            _edgeList = _edgeSlots.map { $0! }
+        }
+        return _edgeList
+    }
 
     // MARK: - Compound graph storage (only used when compound = true)
 
@@ -154,7 +180,9 @@ public final class Graph<NodeLabel, EdgeLabel> {
 
         // New node
         _nodeSet.insert(v)
-        _nodeOrder.append(v)
+        _nodeSlot[v] = _nodeSlots.count
+        _nodeSlots.append(v)
+        if _nodeHoles == 0 { _nodeList.append(v) }
         if let label = label {
             _nodes[v] = label
         } else if let factory = _defaultNodeLabelFn {
@@ -220,7 +248,7 @@ public final class Graph<NodeLabel, EdgeLabel> {
         }
 
         _nodeSet.remove(v)
-        _nodeOrder.removeAll { $0 == v }
+        if let i = _nodeSlot.removeValue(forKey: v) { _nodeSlots[i] = nil; _nodeHoles += 1 }
         _nodes.removeValue(forKey: v)
         _in.removeValue(forKey: v)
         _out.removeValue(forKey: v)
@@ -275,7 +303,9 @@ public final class Graph<NodeLabel, EdgeLabel> {
         _out[v, default: []].append(edgeId)
         _in[w, default: []].append(edgeId)
         _edgeCount += 1
-        _edgeOrder.append(edgeId)
+        _edgeSlot[edgeId] = _edgeSlots.count
+        _edgeSlots.append(edgeId)
+        if _edgeHoles == 0 { _edgeList.append(edgeId) }
 
         return self
     }
@@ -331,7 +361,7 @@ public final class Graph<NodeLabel, EdgeLabel> {
         _edgeObjs.removeValue(forKey: edgeId)
         _out[edgeId.v]?.removeAll { $0 == edgeId }
         _in[edgeId.w]?.removeAll { $0 == edgeId }
-        _edgeOrder.removeAll { $0 == edgeId }
+        if let i = _edgeSlot.removeValue(forKey: edgeId) { _edgeSlots[i] = nil; _edgeHoles += 1 }
         _edgeCount -= 1
     }
 
@@ -488,6 +518,13 @@ public final class Graph<NodeLabel, EdgeLabel> {
         return _parent[v] ?? nil
     }
 
+    /// Edges whose endpoints are both in `vs`, in graph edge insertion order.
+    func edges(within vs: [String: some Any]) -> [EdgeId] {
+        var ids: [EdgeId] = []
+        for v in vs.keys { ids += (_out[v] ?? []).filter { vs[$0.w] != nil } }
+        return ids.sorted { _edgeSlot[$0]! < _edgeSlot[$1]! }
+    }
+
     /// Returns the children of a node. Pass nil to get root-level nodes.
     /// Children are returned in their insertion order (subset of nodeOrder).
     public func children(_ v: String? = nil) -> [String]? {
@@ -507,7 +544,7 @@ public final class Graph<NodeLabel, EdgeLabel> {
         }
 
         // Return children in node insertion order for determinism
-        return _nodeOrder.filter { childSet.contains($0) }
+        return childSet.sorted { _nodeSlot[$0]! < _nodeSlot[$1]! }
     }
 
     // MARK: - Helper methods
