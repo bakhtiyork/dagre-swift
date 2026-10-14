@@ -52,18 +52,16 @@ public final class Graph<NodeLabel, EdgeLabel> {
     private var _nodeSet: Set<String> = []
 
     /// Node insertion order for deterministic iteration. Removal leaves a nil hole in
-    /// `_nodeSlots` (O(1)); holes are compacted on the next ordered read. Slot indices
-    /// increase with insertion order, so they also order subsets such as children.
+    /// `_nodeSlots` (O(1)); `_nodeList` drops the holes on the next ordered read. A node keeps
+    /// its slot, and slots increase with insertion order, so they also order subsets such as children.
     private var _nodeSlots: [String?] = []
     private var _nodeSlot: [String: Int] = [:]
-    private var _nodeHoles = 0
+    private var _nodeListIsStale = false
     private var _nodeList: [String] = []
     private var _nodeOrder: [String] {
-        if _nodeHoles > 0 {
-            _nodeSlots = _nodeSlots.filter { $0 != nil }
-            for (i, v) in _nodeSlots.enumerated() { _nodeSlot[v!] = i }
-            _nodeHoles = 0
-            _nodeList = _nodeSlots.map { $0! }
+        if _nodeListIsStale {
+            _nodeList = _nodeSlots.compactMap { $0 }
+            _nodeListIsStale = false
         }
         return _nodeList
     }
@@ -105,8 +103,8 @@ public final class Graph<NodeLabel, EdgeLabel> {
     /// Parent of each node
     private var _parent: [String: String] = [:]
 
-    /// Children of each node (nil key = root children)
-    private var _children: [String?: Set<String>] = [nil: []]
+    /// Children of each node with their node slots (nil key = root children)
+    private var _children: [String?: [String: Int]] = [nil: [:]]
 
     // MARK: - Default label factories
 
@@ -180,9 +178,10 @@ public final class Graph<NodeLabel, EdgeLabel> {
 
         // New node
         _nodeSet.insert(v)
-        _nodeSlot[v] = _nodeSlots.count
+        let slot = _nodeSlots.count
+        _nodeSlot[v] = slot
         _nodeSlots.append(v)
-        if _nodeHoles == 0 { _nodeList.append(v) }
+        if !_nodeListIsStale { _nodeList.append(v) }
         if let label = label {
             _nodes[v] = label
         } else if let factory = _defaultNodeLabelFn {
@@ -194,8 +193,8 @@ public final class Graph<NodeLabel, EdgeLabel> {
 
         if isCompound {
             _parent[v] = nil
-            _children[v] = []
-            _children[nil, default: []].insert(v)
+            _children[v] = [:]
+            _children[nil, default: [:]][v] = slot
         }
 
         return self
@@ -232,14 +231,14 @@ public final class Graph<NodeLabel, EdgeLabel> {
         if isCompound {
             // Remove from parent's children
             if let parent = _parent[v] {
-                _children[parent]?.remove(v)
+                _children[parent]?.removeValue(forKey: v)
             } else {
-                _children[nil]?.remove(v)
+                _children[nil]?.removeValue(forKey: v)
             }
 
             // Move children to root (setting parent to nil can never create a cycle)
             if let children = _children[v] {
-                for child in children {
+                for child in children.keys {
                     try? setParent(child, parent: nil)
                 }
             }
@@ -248,7 +247,7 @@ public final class Graph<NodeLabel, EdgeLabel> {
         }
 
         _nodeSet.remove(v)
-        if let i = _nodeSlot.removeValue(forKey: v) { _nodeSlots[i] = nil; _nodeHoles += 1 }
+        if let i = _nodeSlot.removeValue(forKey: v) { _nodeSlots[i] = nil; _nodeListIsStale = true }
         _nodes.removeValue(forKey: v)
         _in.removeValue(forKey: v)
         _out.removeValue(forKey: v)
@@ -461,7 +460,7 @@ public final class Graph<NodeLabel, EdgeLabel> {
     /// Returns true if v is a leaf node (no children in compound graph, or just has edges)
     public func isLeaf(_ v: String) -> Bool {
         if isCompound {
-            return (_children[v] ?? []).isEmpty
+            return (_children[v] ?? [:]).isEmpty
         }
         return true
     }
@@ -496,18 +495,14 @@ public final class Graph<NodeLabel, EdgeLabel> {
 
         // Remove from old parent
         if let oldParent = _parent[v] {
-            _children[oldParent]?.remove(v)
+            _children[oldParent]?.removeValue(forKey: v)
         } else {
-            _children[nil]?.remove(v)
+            _children[nil]?.removeValue(forKey: v)
         }
 
         // Add to new parent
         _parent[v] = parent
-        if let parent = parent {
-            _children[parent, default: []].insert(v)
-        } else {
-            _children[nil, default: []].insert(v)
-        }
+        _children[parent, default: [:]][v] = _nodeSlot[v]!
 
         return self
     }
@@ -535,16 +530,16 @@ public final class Graph<NodeLabel, EdgeLabel> {
             return hasNode(v!) ? [] : nil
         }
 
-        let childSet: Set<String>
+        let childSlots: [String: Int]
         if v == nil {
-            childSet = _children[nil] ?? []
+            childSlots = _children[nil] ?? [:]
         } else {
             guard hasNode(v!) else { return nil }
-            childSet = _children[v!] ?? []
+            childSlots = _children[v!] ?? [:]
         }
 
         // Return children in node insertion order for determinism
-        return childSet.sorted { _nodeSlot[$0]! < _nodeSlot[$1]! }
+        return childSlots.sorted { $0.value < $1.value }.map(\.key)
     }
 
     // MARK: - Helper methods
