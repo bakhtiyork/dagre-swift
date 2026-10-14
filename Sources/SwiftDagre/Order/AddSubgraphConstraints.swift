@@ -47,4 +47,33 @@ public enum AddSubgraphConstraints {
             }
         }
     }
+
+    /// `run` on node indices, with each node's layer graph parent given by `parent`
+    static func run(parent: [Int?], cg: IndexedConstraintGraph, vs: [Int]) {
+        var prev: [Int: Int] = [:]
+        var rootPrev: Int?
+
+        for v in vs {
+            var child = parent[v]
+
+            while let currentChild = child {
+                let p = parent[currentChild]
+                let prevChild: Int?
+                if let p = p {
+                    prevChild = prev[p]
+                    prev[p] = currentChild
+                } else {
+                    prevChild = rootPrev
+                    rootPrev = currentChild
+                }
+
+                if let pc = prevChild, pc != currentChild {
+                    cg.setEdge(pc, currentChild)
+                    break
+                }
+
+                child = p
+            }
+        }
+    }
 }

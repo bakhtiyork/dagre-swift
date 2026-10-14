@@ -49,16 +49,43 @@ public enum Order {
         let upLayerGraphs = try buildLayerGraphs(g, ranks: upRanks, relationship: "outEdges")
 
         // Get initial layering
-        var layering = InitOrder.run(g)
+        let layering = InitOrder.run(g)
         assignOrder(g, layering: layering)
 
         if disableOptimization {
             return
         }
 
+        // The sweeps work on node indices: node i is ids[i], and index ids.count stands for the
+        // layer graphs' root. Orders live in `order` until the best layering is applied.
+        let ids = g.nodes()
+        var index: [String: Int] = [:]
+        index.reserveCapacity(ids.count)
+        for (i, v) in ids.enumerated() {
+            index[v] = i
+        }
+        let root = ids.count
+        let parent: [Int?] = ids.map { v in g.parent(v).map { index[$0]! } ?? root } + [nil]
+        var order = ids.map { g.node($0)?.order ?? 0 }
+
+        let downGraphs = downLayerGraphs.map { IndexedLayerGraph($0.graph, root: $0.root, index: index) }
+        let upGraphs = upLayerGraphs.map { IndexedLayerGraph($0.graph, root: $0.root, index: index) }
+
+        // Nodes of each layer in graph order, as GraphUtil.buildLayerMatrix collects them
+        var layerNodes: [[Int]] = Array(repeating: [], count: max(maxRank, 0) + 1)
+        for (i, v) in ids.enumerated() {
+            if let rank = g.node(v)?.rank, rank >= 0 && rank < layerNodes.count {
+                layerNodes[rank].append(i)
+            }
+        }
+        let outEdges: [[(w: Int, weight: Int)]] = ids.map { v in
+            (g.outEdges(v) ?? []).map { (w: index[$0.w]!, weight: g.edge($0.id)?.weight ?? 1) }
+        }
+        var southPos = Array(repeating: -1, count: ids.count)
+
         // Track best solution
         var bestCC = Int.max
-        var bestLayering = layering
+        var bestLayering: [[Int]] = []
 
         // Iterate until no improvement for 4 consecutive iterations
         var lastBest = 0
@@ -70,14 +97,14 @@ public enum Order {
             let useDownGraphs = (i % 2) == 1
             let biasRight = (i % 4) >= 2
 
-            let layerGraphs = useDownGraphs ? downLayerGraphs : upLayerGraphs
-            try sweepLayerGraphs(g, layerGraphs: layerGraphs, biasRight: biasRight)
+            let layerGraphs = useDownGraphs ? downGraphs : upGraphs
+            sweepLayerGraphs(layerGraphs, order: &order, parent: parent, biasRight: biasRight)
 
-            // Rebuild layering from current order
-            layering = GraphUtil.buildLayerMatrix(g)
+            // Rebuild layering from current order (GraphUtil.buildLayerMatrix)
+            let layering = layerNodes.map { $0.sorted { order[$0] < order[$1] } }
 
             // Count crossings
-            let cc = CrossCount.count(g, layering: layering)
+            let cc = CrossCount.count(layering: layering, outEdges: outEdges, southPos: &southPos)
 
             if cc < bestCC {
                 lastBest = 0
@@ -90,8 +117,11 @@ public enum Order {
             i += 1
         }
 
-        // Apply best solution
-        assignOrder(g, layering: bestLayering)
+        // Apply best solution over the orders the sweeps left
+        for (i, v) in ids.enumerated() {
+            g.node(v)?.order = order[i]
+        }
+        assignOrder(g, layering: bestLayering.map { $0.map { ids[$0] } })
     }
 
     /// Builds layer graphs for all specified ranks
@@ -128,38 +158,24 @@ public enum Order {
         return layerGraphs
     }
 
-    /// Sweeps through all layer graphs, sorting each one
-    /// Updates the main graph's node orders after sorting
+    /// Sweeps through all layer graphs, sorting each one and updating node orders
     private static func sweepLayerGraphs(
-        _ mainGraph: DagreGraph,
-        layerGraphs: [(graph: Graph<BuildLayerGraph.LayerNodeLabel, BuildLayerGraph.LayerEdgeLabel>, root: String)],
+        _ layerGraphs: [IndexedLayerGraph],
+        order: inout [Int],
+        parent: [Int?],
         biasRight: Bool
-    ) throws {
+    ) {
         // Constraint graph tracks ordering relationships between subgraphs
-        let cg = Graph<Void, Void>()
+        let cg = IndexedConstraintGraph(nodeCount: parent.count)
 
         for lg in layerGraphs {
-            // CRITICAL: Sync orders from main graph to layer graph before sorting
-            // This is necessary because Swift's layer graphs have separate LayerNodeLabel objects,
-            // unlike TypeScript where setDefaultNodeLabel returns references to the main graph's nodes.
-            // Without this sync, barycenter calculations use stale order values from build time.
-            for v in lg.graph.nodes() {
-                if let mainOrder = mainGraph.node(v)?.order {
-                    lg.graph.node(v)?.order = mainOrder
-                }
-            }
-
-            let sorted = SortSubgraph.sortLayerGraph(lg.graph, v: lg.root, cg: cg, biasRight: biasRight)
-
-            // Apply order to layer graph nodes AND main graph nodes
+            let sorted = SortSubgraph.sortLayerGraph(lg.root, order: order, cg: cg, biasRight: biasRight)
             for (i, v) in sorted.vs.enumerated() {
-                lg.graph.node(v)?.order = i
-                // Also update the main graph's node order
-                mainGraph.node(v)?.order = i
+                order[v] = i
             }
 
             // Add subgraph constraints for next iteration
-            try AddSubgraphConstraints.run(lg.graph, cg: cg, vs: sorted.vs)
+            AddSubgraphConstraints.run(parent: parent, cg: cg, vs: sorted.vs)
         }
     }
 
