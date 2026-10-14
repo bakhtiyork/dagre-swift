@@ -25,21 +25,42 @@ public enum InitOrder {
         // Initialize layers
         var layers: [[String]] = Array(repeating: [], count: maxRank + 1)
 
-        func dfs(_ v: String) {
-            guard !visited.contains(v) else { return }
-            visited.insert(v)
+        // Each frame is a node whose successors are being visited
+        struct Frame {
+            let successors: [String]
+            var next = 0
+        }
 
-            if let node = g.node(v) {
-                let rank = node.rank
-                if rank >= 0 && rank < layers.count {
-                    layers[rank].append(v)
+        func dfs(_ root: String) {
+            guard !visited.contains(root) else { return }
+
+            // Marks v visited, places it in its layer and returns the frame for its successors
+            func visit(_ v: String) -> Frame {
+                visited.insert(v)
+
+                if let node = g.node(v) {
+                    let rank = node.rank
+                    if rank >= 0 && rank < layers.count {
+                        layers[rank].append(v)
+                    }
                 }
+
+                return Frame(successors: g.successors(v) ?? [])
             }
 
+            var stack = [visit(root)]
+
             // Continue DFS to successors
-            if let successors = g.successors(v) {
-                for w in successors {
-                    dfs(w)
+            while let top = stack.indices.last {
+                guard stack[top].next < stack[top].successors.count else {
+                    stack.removeLast()
+                    continue
+                }
+
+                let w = stack[top].successors[stack[top].next]
+                stack[top].next += 1
+                if !visited.contains(w) {
+                    stack.append(visit(w))
                 }
             }
         }

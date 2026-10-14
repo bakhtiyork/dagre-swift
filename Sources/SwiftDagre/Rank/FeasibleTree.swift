@@ -58,23 +58,34 @@ public enum FeasibleTree {
     /// Extends the tree by DFS along tight edges
     /// Returns the number of nodes in the tree
     private static func tightTree(_ t: Tree, _ g: DagreGraph) throws -> Int {
-        func dfs(_ v: String) throws {
-            guard let nodeEdges = g.nodeEdges(v) else { return }
+        // Each frame is a node whose incident edges are being scanned
+        struct Frame {
+            let v: String
+            let nodeEdges: [Edge]
+            var next = 0
+        }
 
-            for edge in nodeEdges {
+        for start in t.nodes() {
+            var stack = [Frame(v: start, nodeEdges: g.nodeEdges(start) ?? [])]
+
+            while let top = stack.indices.last {
+                guard stack[top].next < stack[top].nodeEdges.count else {
+                    stack.removeLast()
+                    continue
+                }
+
+                let v = stack[top].v
+                let edge = stack[top].nodeEdges[stack[top].next]
+                stack[top].next += 1
                 let w = (v == edge.v) ? edge.w : edge.v
 
                 // Only add nodes not already in tree, and only via tight edges
                 if !t.hasNode(w) && RankUtil.slack(g, edge: edge) == 0 {
                     t.setNode(w, label: TreeNodeLabel())
                     try t.setEdge(v, w, label: TreeEdgeLabel())
-                    try dfs(w)
+                    stack.append(Frame(v: w, nodeEdges: g.nodeEdges(w) ?? []))
                 }
             }
-        }
-
-        for v in t.nodes() {
-            try dfs(v)
         }
 
         return t.nodeCount()

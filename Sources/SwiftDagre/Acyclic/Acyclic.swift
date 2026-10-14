@@ -75,24 +75,41 @@ public enum Acyclic {
         var visited = Set<String>()
         var stack = Set<String>()
 
-        func dfs(_ v: String) {
-            if visited.contains(v) { return }
+        // Each frame is a node on the DFS path whose out-edges are being followed
+        struct Frame {
+            let v: String
+            let outEdges: [Edge]
+            var next = 0
+        }
 
-            visited.insert(v)
-            stack.insert(v)
+        func dfs(_ root: String) {
+            if visited.contains(root) { return }
 
-            if let outEdges = g.outEdges(v) {
-                for edge in outEdges {
-                    if stack.contains(edge.w) {
-                        // Found a back edge - add to feedback arc set
-                        fas.append(edge)
-                    } else {
-                        dfs(edge.w)
-                    }
-                }
+            // Marks v visited and on the path, and returns the frame for its out-edges
+            func enter(_ v: String) -> Frame {
+                visited.insert(v)
+                stack.insert(v)
+                return Frame(v: v, outEdges: g.outEdges(v) ?? [])
             }
 
-            stack.remove(v)
+            var path = [enter(root)]
+
+            while let top = path.indices.last {
+                guard path[top].next < path[top].outEdges.count else {
+                    stack.remove(path[top].v)
+                    path.removeLast()
+                    continue
+                }
+
+                let edge = path[top].outEdges[path[top].next]
+                path[top].next += 1
+                if stack.contains(edge.w) {
+                    // Found a back edge - add to feedback arc set
+                    fas.append(edge)
+                } else if !visited.contains(edge.w) {
+                    path.append(enter(edge.w))
+                }
+            }
         }
 
         // TypeScript (acyclic.js line 51): g.nodes().forEach(dfs)

@@ -53,29 +53,41 @@ public enum NetworkSimplex {
         var visited = Set<String>()
         var counter = 1
 
-        func dfs(_ v: String, parent: String?) -> Int {
-            guard let label = t.node(v) else { return counter }
+        // Each frame is a node whose neighbors are being visited
+        struct Frame {
+            let v: String
+            let label: FeasibleTree.TreeNodeLabel
+            let parent: String?
+            let low: Int
+            let neighbors: [String]
+            var next = 0
+        }
+        var stack: [Frame] = []
 
-            let low = counter
+        // Marks v visited and pushes its frame (low is the counter on entry)
+        func enter(_ v: String, parent: String?) {
+            guard let label = t.node(v) else { return }
             visited.insert(v)
-
-            if let neighbors = t.neighbors(v) {
-                for w in neighbors {
-                    if !visited.contains(w) {
-                        counter = dfs(w, parent: v)
-                    }
-                }
-            }
-
-            label.low = low
-            label.lim = counter
-            counter += 1
-            label.parent = parent
-
-            return counter
+            stack.append(Frame(v: v, label: label, parent: parent, low: counter, neighbors: t.neighbors(v) ?? []))
         }
 
-        _ = dfs(start, parent: nil)
+        enter(start, parent: nil)
+
+        while let top = stack.indices.last {
+            if stack[top].next < stack[top].neighbors.count {
+                let w = stack[top].neighbors[stack[top].next]
+                stack[top].next += 1
+                if !visited.contains(w) {
+                    enter(w, parent: stack[top].v)
+                }
+            } else {
+                let frame = stack.removeLast()
+                frame.label.low = frame.low
+                frame.label.lim = counter
+                counter += 1
+                frame.label.parent = frame.parent
+            }
+        }
     }
 
     // MARK: - Cut Values
@@ -293,44 +305,50 @@ public enum NetworkSimplex {
 
     /// Returns nodes in postorder (children before parents)
     private static func postorder(_ t: FeasibleTree.Tree) -> [String] {
-        var result: [String] = []
-        var visited = Set<String>()
-
-        guard let start = t.nodes().first else { return result }
-
-        func dfs(_ v: String) {
-            visited.insert(v)
-
-            if let neighbors = t.neighbors(v) {
-                for w in neighbors where !visited.contains(w) {
-                    dfs(w)
-                }
-            }
-
-            result.append(v)
-        }
-
-        dfs(start)
-        return result
+        guard let start = t.nodes().first else { return [] }
+        return depthFirstOrder(t, root: start, postorder: true)
     }
 
     /// Returns nodes in preorder (parents before children)
     private static func preorder(_ t: FeasibleTree.Tree, root: String) -> [String] {
+        depthFirstOrder(t, root: root, postorder: false)
+    }
+
+    /// Lists the nodes reachable from `root` in DFS order, appending each node either when it is
+    /// first visited (preorder) or after all its unvisited neighbors (postorder)
+    private static func depthFirstOrder(_ t: FeasibleTree.Tree, root: String, postorder: Bool) -> [String] {
         var result: [String] = []
         var visited = Set<String>()
 
-        func dfs(_ v: String) {
-            visited.insert(v)
-            result.append(v)
+        // Each frame is a node whose neighbors are being visited
+        struct Frame {
+            let v: String
+            let neighbors: [String]
+            var next = 0
+        }
+        var stack: [Frame] = []
 
-            if let neighbors = t.neighbors(v) {
-                for w in neighbors where !visited.contains(w) {
-                    dfs(w)
+        func enter(_ v: String) {
+            visited.insert(v)
+            if !postorder { result.append(v) }
+            stack.append(Frame(v: v, neighbors: t.neighbors(v) ?? []))
+        }
+
+        enter(root)
+
+        while let top = stack.indices.last {
+            if stack[top].next < stack[top].neighbors.count {
+                let w = stack[top].neighbors[stack[top].next]
+                stack[top].next += 1
+                if !visited.contains(w) {
+                    enter(w)
                 }
+            } else {
+                if postorder { result.append(stack[top].v) }
+                stack.removeLast()
             }
         }
 
-        dfs(root)
         return result
     }
 }

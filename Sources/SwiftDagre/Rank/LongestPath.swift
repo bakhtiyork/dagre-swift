@@ -20,7 +20,18 @@ public enum LongestPath {
     public static func run(_ g: DagreGraph) {
         var visited = Set<String>()
 
-        func dfs(_ v: String) -> Int {
+        // The DFS keeps its own stack of frames, one per node whose successors are being
+        // ranked, so its depth is not bounded by the thread's stack
+        struct Frame {
+            let label: DagreNodeLabel
+            let outEdges: [Edge]
+            var next = 0
+            var minSuccRank = Int.max
+        }
+        var stack: [Frame] = []
+
+        // Visits v: returns its rank if that is already known, otherwise pushes a frame for it
+        func enter(_ v: String) -> Int? {
             guard let label = g.node(v) else { return 0 }
 
             if visited.contains(v) {
@@ -28,29 +39,36 @@ public enum LongestPath {
             }
 
             visited.insert(v)
-
-            // Get minimum rank based on successors
-            var minSuccRank = Int.max
-            if let outEdges = g.outEdges(v) {
-                for edge in outEdges {
-                    let succRank = dfs(edge.w)
-                    let minlen = g.edge(edge.id)?.minlen ?? 1
-                    minSuccRank = min(minSuccRank, succRank - minlen)
-                }
-            }
-
-            // If no successors, this is a sink - use rank 0
-            // Otherwise, use minimum successor rank - minlen
-            let rank = minSuccRank == Int.max ? 0 : minSuccRank
-            label.rank = rank
-
-            return rank
+            stack.append(Frame(label: label, outEdges: g.outEdges(v) ?? []))
+            return nil
         }
 
         // Process only from source nodes (TypeScript line 58: g.sources().forEach(dfs))
         // Sources are nodes with no incoming edges
-        for v in g.sources() {
-            _ = dfs(v)
+        for source in g.sources() {
+            var succRank = enter(source)
+
+            while let top = stack.indices.last {
+                // Fold in the rank of the successor that was just visited
+                if let rank = succRank {
+                    let edge = stack[top].outEdges[stack[top].next]
+                    let minlen = g.edge(edge.id)?.minlen ?? 1
+                    stack[top].minSuccRank = min(stack[top].minSuccRank, rank - minlen)
+                    stack[top].next += 1
+                    succRank = nil
+                }
+
+                if stack[top].next < stack[top].outEdges.count {
+                    succRank = enter(stack[top].outEdges[stack[top].next].w)
+                } else {
+                    // If no successors, this is a sink - use rank 0
+                    // Otherwise, use minimum successor rank - minlen
+                    let frame = stack.removeLast()
+                    let rank = frame.minSuccRank == Int.max ? 0 : frame.minSuccRank
+                    frame.label.rank = rank
+                    succRank = rank
+                }
+            }
         }
 
         // NOTE: TypeScript's longestPath does NOT normalize ranks
