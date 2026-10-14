@@ -71,9 +71,6 @@ public final class Graph<NodeLabel, EdgeLabel> {
     /// Edge labels indexed by EdgeId
     private var _edgeLabels: [EdgeId: EdgeLabel] = [:]
 
-    /// Edge objects for each edge (for returning edge info)
-    private var _edgeObjs: [EdgeId: Edge] = [:]
-
     /// Outgoing edges from each node: node -> [edgeId]
     private var _out: [String: [EdgeId]] = [:]
 
@@ -264,7 +261,7 @@ public final class Graph<NodeLabel, EdgeLabel> {
 
     /// Returns all edges in the graph (in insertion order for determinism)
     public func edges() -> [Edge] {
-        _edgeOrder.compactMap { _edgeObjs[$0] }
+        _edgeOrder.map { Edge($0) }
     }
 
     /// Adds an edge to the graph
@@ -298,7 +295,6 @@ public final class Graph<NodeLabel, EdgeLabel> {
             _edgeLabels[edgeId] = factory(v, w, name)
         }
 
-        _edgeObjs[edgeId] = Edge(edgeId)
         _out[v, default: []].append(edgeId)
         _in[w, default: []].append(edgeId)
         _edgeCount += 1
@@ -357,7 +353,6 @@ public final class Graph<NodeLabel, EdgeLabel> {
         guard _edgeLabels[edgeId] != nil else { return }
 
         _edgeLabels.removeValue(forKey: edgeId)
-        _edgeObjs.removeValue(forKey: edgeId)
         _out[edgeId.v]?.removeAll { $0 == edgeId }
         _in[edgeId.w]?.removeAll { $0 == edgeId }
         if let i = _edgeSlot.removeValue(forKey: edgeId) { _edgeSlots[i] = nil; _edgeHoles += 1 }
