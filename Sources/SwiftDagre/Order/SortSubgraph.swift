@@ -380,21 +380,20 @@ public enum SortSubgraph {
         // Sort unsortable by descending original index (b.i - a.i)
         unsortable.sort { $0.i > $1.i }
 
-        // Sort sortable by barycenter with bias tie-breaker
-        sortable.sort { a, b in
-            let aBC = a.barycenter ?? 0
-            let bBC = b.barycenter ?? 0
-
-            if aBC < bBC {
+        // Sort sortable by barycenter with bias tie-breaker. Original indices are unique, so the
+        // order is total and sorting just the keys gives the same result as sorting the entries.
+        let keys = sortable.enumerated().map { (bc: $1.barycenter ?? 0, i: $1.i, position: $0) }
+        sortable = keys.sorted { a, b in
+            if a.bc < b.bc {
                 return true
-            } else if aBC > bBC {
+            } else if a.bc > b.bc {
                 return false
             }
             // Tie-breaker: by original index
             // If !biasRight: a.i - b.i (ascending)
             // If biasRight: b.i - a.i (descending)
             return biasRight ? a.i > b.i : a.i < b.i
-        }
+        }.map { sortable[$0.position] }
 
         // Merge sortable and unsortable using consumeUnsortable pattern
         var vs: [[V]] = []
