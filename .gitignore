@@ -33,3 +33,6 @@ DerivedData/
 
 # Test output
 *.xcresult
+
+# Spotlight-excluded build dirs
+*.noindex/
