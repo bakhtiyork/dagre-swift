@@ -473,7 +473,9 @@ public enum BrandesKopf {
         var minWidth = Double.infinity
         var result: [String: Double] = [:]
 
-        for (_, xs) in xss {
+        // Fixed ul, ur, dl, dr order as in dagre.js, so the first of equally narrow
+        // alignments wins instead of whichever Dictionary iteration yields first.
+        for xs in ["ul", "ur", "dl", "dr"].compactMap({ xss[$0] }) {
             var maxX = -Double.infinity
             var minX = Double.infinity
 
